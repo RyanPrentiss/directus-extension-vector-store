@@ -57,8 +57,6 @@ export class RDSVectorStore {
         } catch (error: any) {
             console.error('Error retrieving processed files:', error)
             res.status(500).json({ message: 'Error retrieving processed files.', error: error.message })
-        } finally {
-            await RC.disconnect()
         }
     }
 
@@ -104,8 +102,9 @@ export class RDSVectorStore {
                 }
                 await RC.lPush('processed_files', JSON.stringify(metadata))
             } finally {
-                await RC.disconnect()
+                if (req.file) fs.unlink(req.file.path, () => { })
             }
+
 
             return res.status(200).json({ message: 'File processed successfully' })
         } catch (error: any) {
@@ -182,8 +181,6 @@ export class RDSVectorStore {
                 message: 'Deletion failed',
                 error: error.message
             })
-        } finally {
-            await RC.disconnect()
         }
     }
 }
