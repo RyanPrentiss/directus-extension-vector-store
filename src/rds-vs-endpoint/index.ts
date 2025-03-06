@@ -4,15 +4,15 @@ import { RDSVectorStore } from './vs-store.js'
 
 const upload = multer({ dest: './extensions/directus-extension-vector-store/uploads/', preservePath: true })
 
-const vs = new RDSVectorStore()
+const VS = new RDSVectorStore()
 
 export default defineEndpoint((router) => {
-	router.delete('/del-vector', vs.delete)
+	router.delete('/del-vector', VS.delete)
 
-	router.get('/get-vectors', vs.get)
+	router.get('/get-vectors', VS.get)
 
-	router.post('/embed-vector', upload.single('file'), vs.embed)
+	router.post('/embed-vector', upload.single('file'), VS.embed)
 
-	router.get('/', (_req, res) => res.sendStatus(200))
+	router.get('/health', (_req, res) => res.sendStatus(200))
 })
 
