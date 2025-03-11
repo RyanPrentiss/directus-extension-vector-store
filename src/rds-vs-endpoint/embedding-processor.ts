@@ -16,7 +16,7 @@ import { TextLoader } from 'langchain/document_loaders/fs/text'
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter'
 // import mime from 'mime-types'
 import { nanoid } from "nanoid"
-import { createClient } from 'redis'
+import { RedisClientType } from 'redis'
 
 
 
@@ -25,7 +25,7 @@ import { createClient } from 'redis'
  */
 export async function processAndStoreEmbeddings(
     fileConfig: FileConfig,
-    redisUrl: string,
+    redisClient: RedisClientType,
     emConfig: EmbedderConfig,
 ): Promise<string[]> {
     const loader = await getDocumentLoader(fileConfig.path, fileConfig.type)
@@ -37,7 +37,7 @@ export async function processAndStoreEmbeddings(
     }
     const documents = await loadAndSplitDocuments(loader, chunk)
     console.log("2. Documents Split")
-    return storeEmbeddings(documents, redisUrl, emConfig)
+    return storeEmbeddings(documents, redisClient, emConfig)
 }
 
 /**
@@ -123,48 +123,39 @@ async function loadAndSplitDocuments(
  */
 async function storeEmbeddings(
     documents: any[],
-    redisUrl: string,
+    redisClient: RedisClientType,
     config: EmbedderConfig
 ): Promise<string[]> {
     console.log("Creating embeddings instance...")
     const embeddings = new OllamaEmbeddings({ model: config.model, baseUrl: config.baseUrl })
 
-    console.log("Connecting to Redis...")
-    const client = createClient({ url: redisUrl })
-    await client.connect()
-    console.log("Redis connected successfully")
+    const chunkKeys: string[] = []
+    const keyPrefix = `rds:${nanoid()}:`
+    console.log(`Using key prefix: ${keyPrefix}`)
 
-    try {
-        const chunkKeys: string[] = []
-        const keyPrefix = `rds:${nanoid()}:`
-        console.log(`Using key prefix: ${keyPrefix}`)
-
-        // Generate unique keys with index
-        for (let i = 0; i < documents.length; i++) {
-            const uniqueKey = `${keyPrefix}${i}`
-            documents[i].metadata.id = uniqueKey // Set FULL key as ID
-            chunkKeys.push(uniqueKey)
-        }
-
-        console.log("Generating embeddings and storing in Redis...")
-        await RedisVectorStore.fromDocuments(
-            documents,
-            embeddings,
-            {
-                redisClient: client,
-                indexName: config.index,
-                keyPrefix,
-            }
-        ).catch(error => {
-            console.error("Error in RedisVectorStore.fromDocuments:", error)
-            console.error("Stack trace:", error.stack)
-            throw error
-        })
-
-        console.log(`Successfully stored ${chunkKeys.length} embeddings`)
-        return chunkKeys
-    } finally {
-        await client.disconnect()
+    // Generate unique keys with index
+    for (let i = 0; i < documents.length; i++) {
+        const uniqueKey = `${keyPrefix}${i}`
+        documents[i].metadata.id = uniqueKey // Set FULL key as ID
+        chunkKeys.push(uniqueKey)
     }
+
+    console.log("Generating embeddings and storing in Redis...")
+    await RedisVectorStore.fromDocuments(
+        documents,
+        embeddings,
+        {
+            redisClient,
+            indexName: config.index,
+            keyPrefix,
+        }
+    ).catch(error => {
+        console.error("Error in RedisVectorStore.fromDocuments:", error)
+        console.error("Stack trace:", error.stack)
+        throw error
+    })
+
+    console.log(`Successfully stored ${chunkKeys.length} embeddings`)
+    return chunkKeys
 }
 
