@@ -63,6 +63,7 @@ export class RDSVectorStore {
     // Ensures Redis connection is active
     private async ensureConnection(): Promise<void> {
         if (!this.redisClient.isOpen) {
+            console.log('Attempting Redis connection...')
             if (!this.isConnecting) {
                 this.isConnecting = true
                 try {
@@ -113,7 +114,12 @@ export class RDSVectorStore {
             res.status(200).json({ files: processedFiles })
         } catch (error: any) {
             console.error('Error retrieving processed files:', error)
-            res.status(500).json({ message: 'Error retrieving processed files.', error: error.message })
+            // Handle cases where error.message might be undefined
+            const errorMessage = error instanceof Error ? error.message : String(error)
+            res.status(500).json({
+                message: 'Error retrieving processed files.',
+                error: errorMessage
+            })
         }
     }
 

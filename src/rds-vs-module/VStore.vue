@@ -188,7 +188,11 @@ async function fetchProcessedFiles() {
         const data = response.data
         processedFiles.value = data.files || []
     } catch (error: any) {
-        message.value = `Error fetching processed files: ${error.message}`
+        // Handle Axios errors and network issues
+        const errorMsg = error.response?.data?.error ||
+            error.message ||
+            'Failed to fetch files (no details)'
+        message.value = `Error fetching processed files: ${errorMsg}`
     }
 }
 
