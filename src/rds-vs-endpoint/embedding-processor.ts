@@ -126,13 +126,18 @@ async function storeEmbeddings(
     redisUrl: string,
     config: EmbedderConfig
 ): Promise<string[]> {
+    console.log("Creating embeddings instance...")
     const embeddings = new OllamaEmbeddings({ model: config.model, baseUrl: config.baseUrl })
+
+    console.log("Connecting to Redis...")
     const client = createClient({ url: redisUrl })
     await client.connect()
+    console.log("Redis connected successfully")
 
     try {
         const chunkKeys: string[] = []
         const keyPrefix = `rds:${nanoid()}:`
+        console.log(`Using key prefix: ${keyPrefix}`)
 
         // Generate unique keys with index
         for (let i = 0; i < documents.length; i++) {
@@ -141,6 +146,7 @@ async function storeEmbeddings(
             chunkKeys.push(uniqueKey)
         }
 
+        console.log("Generating embeddings and storing in Redis...")
         await RedisVectorStore.fromDocuments(
             documents,
             embeddings,
@@ -149,8 +155,13 @@ async function storeEmbeddings(
                 indexName: config.index,
                 keyPrefix,
             }
-        )
+        ).catch(error => {
+            console.error("Error in RedisVectorStore.fromDocuments:", error)
+            console.error("Stack trace:", error.stack)
+            throw error
+        })
 
+        console.log(`Successfully stored ${chunkKeys.length} embeddings`)
         return chunkKeys
     } finally {
         await client.disconnect()
