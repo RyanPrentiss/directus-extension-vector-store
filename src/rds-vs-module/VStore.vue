@@ -116,6 +116,13 @@ function selectUrlInput() {
     }
 }
 
+function validateResponse(response) {
+    if (response.status < 200 || response.status >= 300) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    }
+    return response
+}
+
 /**
  * Uploads the selected file or URL based on toggle selection.
  */
@@ -146,22 +153,16 @@ async function uploadFile() {
             formData.append('chunkSize', '1000')
             formData.append('chunkOverlap', '200')
 
-            const response = await api.post('/rds-vs-endpoint/embed-vector', formData)
-            if (response.statusText !== 'OK') {
-                throw new Error(`Error: ${response.statusText}`)
-            }
+            const response = validateResponse(await api.post('/rds-vs-endpoint/embed-vector', formData))
             const data = response.data
             message.value = data.message || 'File processed successfully.'
         } else if (selectedInput.value === 'url') {
             // Use JSON payload for URL-based processing
-            const response = await api.post('/rds-vs-endpoint/embed-vector', {
+            const response = validateResponse(await api.post('/rds-vs-endpoint/embed-vector', {
                 filePath: filePath.value,
                 chunkSize: 1000,
                 chunkOverlap: 200
-            })
-            if (response.statusText !== 'OK') {
-                throw new Error(`Error: ${response.statusText}`)
-            }
+            }))
             const data = response.data
             message.value = data.message || 'URL processed successfully.'
         }
@@ -181,17 +182,10 @@ async function uploadFile() {
  */
 async function fetchProcessedFiles() {
     try {
-        const response = await api.get('/rds-vs-endpoint/get-vectors')
-
-        // Use status code instead of statusText
-        if (response.status >= 200 && response.status < 300) { // <-- Changed
-            const data = response.data
-            processedFiles.value = data.files || []
-        } else {
-            throw new Error(`HTTP ${response.status}`)
-        }
+        const response = validateResponse(await api.get('/rds-vs-endpoint/get-vectors'))
+        const data = response.data
+        processedFiles.value = data.files || []
     } catch (error: any) {
-        // Enhanced error parsing
         const errorMsg = error.response?.data?.error ||
             error.response?.statusText || // Get server's status text
             error.message ||
@@ -208,12 +202,11 @@ async function deleteFile(filePath: string) {
     try {
         loading.value = true
         message.value = 'Deleting file...'
-        const response = await api.delete(`/rds-vs-endpoint/del-vector`, { data: { filePath } })
-        if (response.statusText !== 'OK') {
-            throw new Error(`Error: ${response.statusText}`)
-        }
+
+        const response = validateResponse(await api.delete(`/rds-vs-endpoint/del-vector`, { data: { filePath } }))
         const data = response.data
         message.value = data.message || 'File deleted successfully.'
+
         await fetchProcessedFiles()
     } catch (error: any) {
         message.value = `Error deleting file: ${error.message}`
