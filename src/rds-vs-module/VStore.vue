@@ -179,19 +179,41 @@ async function uploadFile() {
 /**
  * Fetches the list of previously processed files.
  */
+// async function fetchProcessedFiles() {
+//     try {
+//         const response = await api.get('/rds-vs-endpoint/get-vectors')
+//         if (response.statusText !== 'OK') {
+//             throw new Error(`Error: ${response.statusText}`)
+//         }
+//         const data = response.data
+//         processedFiles.value = data.files || []
+//     } catch (error: any) {
+//         // Handle Axios errors and network issues
+//         const errorMsg = error.response?.data?.error ||
+//             error.message ||
+//             'Failed to fetch files (no details)'
+//         message.value = `Error fetching processed files: ${errorMsg}`
+//     }
+// }
+
 async function fetchProcessedFiles() {
     try {
         const response = await api.get('/rds-vs-endpoint/get-vectors')
-        if (response.statusText !== 'OK') {
-            throw new Error(`Error: ${response.statusText}`)
+
+        // Use status code instead of statusText
+        if (response.status >= 200 && response.status < 300) { // <-- Changed
+            const data = response.data
+            processedFiles.value = data.files || []
+        } else {
+            throw new Error(`HTTP ${response.status}`)
         }
-        const data = response.data
-        processedFiles.value = data.files || []
     } catch (error: any) {
-        // Handle Axios errors and network issues
+        // Enhanced error parsing
         const errorMsg = error.response?.data?.error ||
+            error.response?.statusText || // Get server's status text
             error.message ||
-            'Failed to fetch files (no details)'
+            'Unknown error'
+
         message.value = `Error fetching processed files: ${errorMsg}`
     }
 }
