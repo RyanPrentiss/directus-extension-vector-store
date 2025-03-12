@@ -13,7 +13,7 @@ interface MulterRequest extends Request {
 export class RDSVectorStore {
     private redisClient: RedisClientType
     private emConfig: EmbedderConfig
-    private isConnecting: boolean = false
+    private connectionPromise: Promise<void> | null = null
 
     constructor() {
         const env = useEnv()
@@ -45,43 +45,31 @@ export class RDSVectorStore {
         this.redisClient = createClient({
             url: String(redisUrl),
             socket: {
-                reconnectStrategy: (retries) => {
-                    // Exponential backoff with max 10 second delay
-                    const delay = Math.min(Math.pow(2, retries) * 100, 10000)
-                    return delay
-                }
+                family: 0,
+                reconnectStrategy: (retries) => Math.min(Math.pow(2, retries) * 100, 10000),
             }
-        })
-
-        // Set up error handler
-        this.redisClient.on('error', (err) => {
-            console.error('Redis client error:', err)
-            this.isConnecting = false
         })
     }
 
     // Ensures Redis connection is active
     private async ensureConnection(): Promise<void> {
-        if (!this.redisClient.isOpen) {
-            console.log('Attempting Redis connection...')
-            if (!this.isConnecting) {
-                this.isConnecting = true
+        if (this.redisClient.isOpen) return
+
+        if (!this.connectionPromise) {
+            this.connectionPromise = (async () => {
                 try {
+                    console.log('Attempting Redis connection...')
                     await this.redisClient.connect()
+                } catch (error) {
+                    console.error('Connection failed:', error)
+                    throw error
                 } finally {
-                    this.isConnecting = false
+                    this.connectionPromise = null // Reset on success/failure
                 }
-            } else {
-                // Wait for the ongoing connection attempt to complete
-                while (this.isConnecting) {
-                    await new Promise(resolve => setTimeout(resolve, 50))
-                }
-                // If still not connected after waiting, try again
-                if (!this.redisClient.isOpen) {
-                    await this.ensureConnection()
-                }
-            }
+            })()
         }
+
+        return this.connectionPromise
     }
 
     // Safely executes Redis operations with proper connection management
