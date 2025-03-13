@@ -82,14 +82,14 @@ async function getDocumentLoader(filePath: string, mimeType: string | undefined)
     }
 
     // Handle local files
-    // const mimeType = mime.lookup(filePath)
-
     console.log(`Detected MIME type: ${mimeType} - ${filePath}`)
 
     switch (mimeType) {
         case 'application/pdf':
             return new PDFLoader(filePath)
 
+        case 'text/csv':
+        case 'text/markdown':
         case 'text/plain':
             return new TextLoader(filePath)
 
