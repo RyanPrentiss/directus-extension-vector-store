@@ -14,7 +14,6 @@ import axios from 'axios'
 import * as cheerio from 'cheerio'
 import { TextLoader } from 'langchain/document_loaders/fs/text'
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter'
-// import mime from 'mime-types'
 import { nanoid } from "nanoid"
 import { RedisClientType } from 'redis'
 
@@ -93,6 +92,16 @@ async function getDocumentLoader(filePath: string, mimeType: string | undefined)
         case 'text/plain':
             return new TextLoader(filePath)
 
+        case 'application/octet-stream': {
+            const extension = filePath.split('.').pop()?.toLowerCase()
+            const textExtensions = ['csv', 'md', 'txt']
+
+            if (extension && textExtensions.includes(extension)) {
+                return new TextLoader(filePath)
+            }
+            throw new Error(`Unsupported file type for extension .${extension}`)
+        }
+
         default:
             throw new Error(`Unsupported file type: ${mimeType || 'unknown'}`)
     }
@@ -140,7 +149,7 @@ async function storeEmbeddings(
         chunkKeys.push(uniqueKey)
     }
 
-    console.log("Generating embeddings and storing in Redis...")
+    console.log("Generating embeddings and storing in Redis...", config.index)
     await RedisVectorStore.fromDocuments(
         documents,
         embeddings,

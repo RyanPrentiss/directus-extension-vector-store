@@ -4,6 +4,7 @@ import axios, { AxiosError } from 'axios'
 import { Request, Response } from 'express'
 import * as fs from 'fs'
 import { createClient, RedisClientType } from "redis"
+import { z } from 'zod'
 import { processAndStoreEmbeddings } from './embedding-processor.js'
 
 interface MulterRequest extends Request {
@@ -18,18 +19,10 @@ export class RDSVectorStore {
     constructor() {
         const env = useEnv()
 
-        const getEnvVar = (key: string): string => {
-            const value = env[key]
-            if (typeof value !== 'string') {
-                throw new Error(`Missing or invalid environment variable: ${key}`)
-            }
-            return value
-        }
-
         this.emConfig = {
-            index: getEnvVar('RAG_INDEX'),
-            baseUrl: getEnvVar('LLM_URL'),
-            model: getEnvVar('LLM_EMBEDDING')
+            index: z.string().parse(env.RAG_INDEX),
+            baseUrl: z.string().parse(env.LLM_URL),
+            model: z.string().parse(env.LLM_EMBEDDING)
         }
 
         const redisUrl = env.REDIS ||
@@ -86,8 +79,8 @@ export class RDSVectorStore {
     get = async (_req: Request, res: Response) => {
         try {
             const processedFiles = await this.withRedisConnection(async () => {
-                // Retrieve all entries from the "processed_files" list
-                const files = await this.redisClient.lRange('processed_files', 0, -1) as string[]
+                // Retrieve all entries from the "rds:processed_files" list
+                const files = await this.redisClient.lRange('rds:processed_files', 0, -1) as string[]
 
                 // Parse each entry from JSON
                 return files.map((entry) => {
@@ -122,8 +115,11 @@ export class RDSVectorStore {
                 originalFileName = req.file.originalname
             } else {
                 // Handle URL
-                filePath = req.body.filePath
-                originalFileName = await this.getPageTitle(req.body.filePath)
+                // filePath = req.body.filePath
+                // originalFileName = await this.getPageTitle(req.body.filePath)
+
+                filePath = z.string().url().parse(req.body.filePath)
+                originalFileName = await this.getPageTitle(filePath)
             }
 
             if (!filePath) return res.status(400).json({ message: 'File required' })
@@ -131,7 +127,9 @@ export class RDSVectorStore {
             // Process embeddings and get chunk keys
             const fileConfig: FileConfig = {
                 path: filePath,
-                type: req.file?.mimetype,
+                type: req.file?.mimetype === 'application/octet-stream'
+                    ? this.getMimeTypeFromExtension(req.file.originalname) // Add this method
+                    : req.file?.mimetype,
                 chunk: {
                     overlap: 200,
                     size: 1000
@@ -152,7 +150,7 @@ export class RDSVectorStore {
                     processedAt: new Date().toISOString(),
                     chunkKeys // Store keys for future deletion
                 }
-                await this.redisClient.lPush('processed_files', JSON.stringify(metadata))
+                await this.redisClient.lPush('rds:processed_files', JSON.stringify(metadata))
             })
 
             return res.status(200).json({ message: 'File processed successfully' })
@@ -164,6 +162,16 @@ export class RDSVectorStore {
             })
         } finally {
             if (req.file) fs.unlink(req.file.path, () => { })
+        }
+    }
+
+    private getMimeTypeFromExtension(filename: string): string {
+        const extension = filename.split('.').pop()?.toLowerCase()
+        switch (extension) {
+            case 'csv': return 'text/csv'
+            case 'md': return 'text/markdown'
+            case 'txt': return 'text/plain'
+            default: return 'application/octet-stream'
         }
     }
 
@@ -186,7 +194,7 @@ export class RDSVectorStore {
         try {
             const found = await this.withRedisConnection(async () => {
                 // Get all metadata entries atomically
-                const files = await this.redisClient.lRange('processed_files', 0, -1) as string[]
+                const files = await this.redisClient.lRange('rds:processed_files', 0, -1) as string[]
                 let found = false
 
                 console.log(`Deleting file metadata for path: ${filePath}`)
@@ -214,8 +222,8 @@ export class RDSVectorStore {
                             }
 
                             // Remove THIS SPECIFIC list entry by index
-                            await this.redisClient.lSet('processed_files', i, '__DELETED__')
-                            await this.redisClient.lRem('processed_files', 1, '__DELETED__')
+                            await this.redisClient.lSet('rds:processed_files', i, '__DELETED__')
+                            await this.redisClient.lRem('rds:processed_files', 1, '__DELETED__')
                         }
                     } catch {
                         /* Silent parse errors */
