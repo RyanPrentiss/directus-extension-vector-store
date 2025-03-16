@@ -106,21 +106,26 @@ export class RDSVectorStore {
                 }
 
                 // Create the vector index with appropriate schema
-                // Schema configuration matches what RedisVectorStore expects
-                await this.redisClient.sendCommand([
+                // Include the distance field required by RedisVectorStore
+                const createIndexCmd = [
                     'FT.CREATE', this.emConfig.index,
                     'ON', 'HASH',
-                    'PREFIX', '1', 'rds:', // Match the prefix pattern used in our store
+                    'PREFIX', '1', 'rds:',
                     'SCHEMA',
                     'content', 'TEXT',
                     'metadata', 'TEXT',
-                    'vector', 'VECTOR', 'HNSW', '6', 'TYPE', 'FLOAT32', 'DIM', '384', 'DISTANCE_METRIC', 'COSINE'
-                ]).catch(error => {
+                    'content_vector', 'VECTOR', 'HNSW', '6', 'TYPE', 'FLOAT32', 'DIM', '768', 'DISTANCE_METRIC', 'COSINE'
+                ]
+
+                try {
+                    await this.redisClient.sendCommand(createIndexCmd)
+                    console.log(`Successfully created index with schema: ${this.emConfig.index}`)
+                } catch (error) {
                     // Some Redis versions return an error if index already exists
                     if (!String(error).includes('Index already exists')) {
                         throw error
                     }
-                })
+                }
 
                 return true
             }
