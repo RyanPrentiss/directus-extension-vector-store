@@ -1,4 +1,3 @@
-
 import { useEnv } from '@directus/env'
 import axios, { AxiosError } from 'axios'
 import { Request, Response } from 'express'
@@ -76,6 +75,94 @@ export class RDSVectorStore {
         }
     }
 
+    /**
+     * Ensures that the RediSearch index is properly configured
+     * This method will check if the index exists and create it if necessary,
+     * or drop and recreate if the reset parameter is true
+     * 
+     * @param {boolean} reset - Whether to force a reset of the index
+     * @returns {Promise<boolean>} - Whether the index was created or reset
+     */
+    private async ensureSearchIndex(reset: boolean = false): Promise<boolean> {
+        try {
+            // Check if index exists using FT.INFO command
+            const indexExists = await this.redisClient.sendCommand([
+                'FT.INFO', this.emConfig.index
+            ]).then(() => true).catch(() => false)
+
+            // If reset is requested or index doesn't exist, create/recreate it
+            if (reset || !indexExists) {
+                console.log(`${reset ? 'Resetting' : 'Creating'} Redis search index: ${this.emConfig.index}`)
+
+                // Drop the index if it exists and we're resetting
+                if (indexExists && reset) {
+                    try {
+                        await this.redisClient.sendCommand(['FT.DROPINDEX', this.emConfig.index])
+                        console.log(`Successfully dropped index: ${this.emConfig.index}`)
+                    } catch (error) {
+                        console.warn(`Warning: Failed to drop index ${this.emConfig.index}:`, error)
+                        // Continue anyway, as some versions handle this differently
+                    }
+                }
+
+                // Create the vector index with appropriate schema
+                // Schema configuration matches what RedisVectorStore expects
+                await this.redisClient.sendCommand([
+                    'FT.CREATE', this.emConfig.index,
+                    'ON', 'HASH',
+                    'PREFIX', '1', 'rds:', // Match the prefix pattern used in our store
+                    'SCHEMA',
+                    'content', 'TEXT',
+                    'metadata', 'TEXT',
+                    'vector', 'VECTOR', 'HNSW', '6', 'TYPE', 'FLOAT32', 'DIM', '384', 'DISTANCE_METRIC', 'COSINE'
+                ]).catch(error => {
+                    // Some Redis versions return an error if index already exists
+                    if (!String(error).includes('Index already exists')) {
+                        throw error
+                    }
+                })
+
+                return true
+            }
+
+            return false
+        } catch (error) {
+            console.error('Error ensuring search index:', error)
+            throw new Error(`Failed to configure vector search index: ${error}`)
+        }
+    }
+
+    /**
+     * Check if all documents have been deleted from the index
+     * This helps determine when we need to reset the index
+     */
+    private async isIndexEmpty(): Promise<boolean> {
+        try {
+            // Check if there are any processed files in the list
+            const files = await this.redisClient.lRange('rds:processed_files', 0, -1)
+            if (!files || files.length === 0) {
+                return true
+            }
+
+            // Further verification: check if any valid entries exist
+            for (const entry of files) {
+                try {
+                    JSON.parse(entry)
+                    // If we can parse at least one valid entry, index is not empty
+                    return false
+                } catch {
+                    continue
+                }
+            }
+
+            // If we get here, either no entries or all entries were invalid
+            return true
+        } catch (error) {
+            console.error('Error checking if index is empty:', error)
+            return false // Default to assuming not empty on error
+        }
+    }
+
     get = async (_req: Request, res: Response) => {
         try {
             const processedFiles = await this.withRedisConnection(async () => {
@@ -115,24 +202,34 @@ export class RDSVectorStore {
                 originalFileName = req.file.originalname
             } else {
                 // Handle URL
-                // filePath = req.body.filePath
-                // originalFileName = await this.getPageTitle(req.body.filePath)
-
                 filePath = z.string().url().parse(req.body.filePath)
                 originalFileName = await this.getPageTitle(filePath)
             }
 
             if (!filePath) return res.status(400).json({ message: 'File required' })
 
+            await this.withRedisConnection(async () => {
+                // Check if this is the first document after all have been deleted
+                // If so, reset the index to ensure proper configuration
+                const isEmpty = await this.isIndexEmpty()
+                if (isEmpty) {
+                    console.log("All documents were previously deleted, ensuring index is properly reset")
+                    await this.ensureSearchIndex(true)
+                } else {
+                    // Just make sure the index exists
+                    await this.ensureSearchIndex(false)
+                }
+            })
+
             // Process embeddings and get chunk keys
             const fileConfig: FileConfig = {
                 path: filePath,
                 type: req.file?.mimetype === 'application/octet-stream'
-                    ? this.getMimeTypeFromExtension(req.file.originalname) // Add this method
+                    ? this.getMimeTypeFromExtension(req.file.originalname)
                     : req.file?.mimetype,
                 chunk: {
-                    overlap: 200,
-                    size: 1000
+                    overlap: req.body.chunkOverlap ? parseInt(req.body.chunkOverlap) : 200,
+                    size: req.body.chunkSize ? parseInt(req.body.chunkSize) : 1000
                 }
             }
 
@@ -192,10 +289,11 @@ export class RDSVectorStore {
         if (!filePath) return res.status(400).json({ message: 'filePath required' })
 
         try {
-            const found = await this.withRedisConnection(async () => {
+            const { found, wasLastFile } = await this.withRedisConnection(async () => {
                 // Get all metadata entries atomically
                 const files = await this.redisClient.lRange('rds:processed_files', 0, -1) as string[]
                 let found = false
+                let deletingFile = false
 
                 console.log(`Deleting file metadata for path: ${filePath}`)
                 console.log(`Files: ${files}`)
@@ -211,6 +309,7 @@ export class RDSVectorStore {
                         const metadata = JSON.parse(metadataStr) as FileMetadata
                         if (metadata.filePath === filePath) {
                             found = true
+                            deletingFile = true
 
                             // Delete chunk keys in batches (Redis allows multiple DELs)
                             if (metadata.chunkKeys?.length) {
@@ -230,15 +329,48 @@ export class RDSVectorStore {
                         continue
                     }
                 }
-                return found
+
+                // Check if this was the last file
+                const remainingFiles = await this.redisClient.lRange('rds:processed_files', 0, -1)
+                const wasLastFile = remainingFiles.length === 0 && deletingFile
+
+                return { found, wasLastFile }
             })
 
             if (!found) return res.status(404).json({ message: 'File not found' })
+
+            // If this was the last file, reset the search index for next upload
+            if (wasLastFile) {
+                console.log("Last document deleted, resetting search index")
+                await this.withRedisConnection(async () => {
+                    await this.ensureSearchIndex(true)
+                })
+            }
+
             return res.status(200).json({ message: 'Embeddings deleted' })
         } catch (error: any) {
             console.error('Deletion error:', error)
             return res.status(500).json({
                 message: 'Deletion failed',
+                error: error.message
+            })
+        }
+    }
+
+    /**
+     * Endpoint to manually reset the index if needed
+     * This can be exposed as an API endpoint if manual intervention is desired
+     */
+    resetIndex = async (_req: Request, res: Response) => {
+        try {
+            await this.withRedisConnection(async () => {
+                await this.ensureSearchIndex(true)
+            })
+            return res.status(200).json({ message: 'Index reset successfully' })
+        } catch (error: any) {
+            console.error('Index reset error:', error)
+            return res.status(500).json({
+                message: 'Failed to reset index',
                 error: error.message
             })
         }
